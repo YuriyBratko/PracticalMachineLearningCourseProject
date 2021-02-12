@@ -8,23 +8,102 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+The data for this project come from this source:
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+Data source: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+## Getting the data
+```{r echo=TRUE, cache=TRUE}
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile ="training.csv", method = "curl")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile ="testing.csv", method = "curl")
+dataForModel <- read.csv("training.csv") # data to build (train) the model
+validation <- read.csv("testing.csv") # data to validate the model
 ```
 
-## Including Plots
+## Exploring and cleaning the data
+We will clean dataset from unused variables (absent in validation set) and useless variables. 
+```{r echo=TRUE}
+# Checking initial dimensions of the training data
+dim(dataForModel)
+# Removing all variables that are absent in validation data set
+na_columns <- colSums(is.na(validation)) # function will return 0 for columns that have all cells populated with data
+dataForModel <- dataForModel[, na_columns == 0] # remove from training set
+validation <- validation[, na_columns == 0] # remove from validation set
+# Removing first seven columns. Columns 3-7 represent time-series data of exercise repetitions. This data can be excluded because testing data does not respect these values.
+dataForModel <- dataForModel[, -c(1:7)] # remove from training set
+validation <- validation[, -c(1:7)] # remove from validation set
+# Checking final dimensions of the training data
+dim(dataForModel)
+```
+**Summary:** We have reduced the number of potential predictors from 159 to 52.  
 
-You can also embed plots, for example:
+## Pre-processing
+### Checking for near zero values to determine variables with no or almost no variance.
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+library(caret) # load caret library we will use for pre-processing and building model
+nzv <- nearZeroVar(dataForModel) # diagnoze for near zero values
+length(nzv) # check how nany column positions of the problematic predictors returned
+```
+**Summary:** We have no near zero values. All zero values were actually removed in previous step while cleaning the data.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+### Pre-processing with Principal Component Analysis (PCA).  
+Motivation to user PCA is that some variables can be highly correlated with one another.
+Let's check for correlation between variables.
+```{r echo=TRUE}
+M <- abs(cor(dataForModel[, -53])) # create matrix of correlations, leaving the classe column out
+diag(M) <- 0 # zero out correlation with itself (diagonal value)
+which(M > 0.9, arr.ind = T) # output variables that have more than 0.9 correlation
+```
+**Summary:** Indeed a big number of variables are correlated, that's why we will use pre-processing with PCA when training the model.
+
+## Cross validation
+We will divide initial training set into training set used for model training and into testing (cross validation) set that will be used to check model accuracy. Ratio for training to testing is 75% to 25%.
+```{r echo=TRUE}
+set.seed(3255) # set seed for reproducibility
+inTrain = createDataPartition(dataForModel$classe, p = 0.75, list = FALSE)
+training = dataForModel[ inTrain,] 
+testing = dataForModel[-inTrain,]
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Model choice
+We will try two models for prediction. First we will use Random Forests. This approach is considered one of the most accurate. Moreover, this approach has been chosen in the original study, thus promising to return the best result.  
+Second, let's try to predic with Boosting and compare results.
+
+<!-- You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases. -->
+
+### Model 1: Random Forests
+```{r echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+controlRF <- trainControl(method="cv", number=3, verboseIter=FALSE, allowParallel = TRUE) # adding tuning parameters for acceptable performance
+modelFitRF <- train(classe ~ ., method = "rf", preProcess = "pca", trControl=controlRF, data = training)
+modelFitRF$finalModel
+modelFitRF$results
+```
+Checking accuracy on our testing (cross validation) set for Random Forests
+```{r echo=TRUE}
+testingPrediction <- predict(modelFitRF, testing) # predict on testing set
+postResample(testingPrediction, testing$classe) # check accuracy with postResample function from caret against test data
+```
+**Summary:** Using Random Forests returned 98% accuracy on training set. Out-of-sample error on testing data is 1 - Accuracy or around 2% in this case.
+
+### Model 2: Boosting
+```{r echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+controlGBM <- trainControl(method = "repeatedcv", number = 5, repeats = 3) # adding tuning parameters for acceptable performance
+modelFitBoosting <- train(classe ~ ., method = "gbm", preProcess = "pca", trControl = controlGBM, verbose = FALSE, data = training)
+modelFitBoosting$finalModel # printing just summary to save space in the report
+```
+Checking accuracy on our testing (cross validation) set for Boosting
+```{r echo=TRUE}
+testingPrediction <- predict(modelFitBoosting, testing) # predict on testing set
+postResample(testingPrediction, testing$classe) # check accuracy with postResample function from caret against test data
+```
+**Summary:** Using Boosting returned only 83% accuracy on training set. Out-of-sample error is 17%.  
+**Summary of model choice:** We shall stick to Random Forests as our model of choice because it returned significantly better results on training set with 98% accuracy. 
+
+## Predicting on validation data
+Let's apply our model of choice, Random Forests, to validation set.
+```{r echo=TRUE}
+validationPrediction <- predict(modelFitRF, validation)
+validationPrediction
+```
+
+
